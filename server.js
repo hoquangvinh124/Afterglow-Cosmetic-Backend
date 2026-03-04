@@ -12,7 +12,12 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: ['https://afterglow-cosmetic.vercel.app', 'http://localhost:4200'],
+    credentials: true, // Cho phép gửi thông tin xác thực (cookies, headers,...)
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(passport.initialize());
@@ -21,7 +26,7 @@ app.use(passport.initialize());
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'YOUR_GOOGLE_CLIENT_SECRET',
-    callbackURL: `http://localhost:${PORT}/api/auth/google/callback`
+    callbackURL: process.env.BACKEND_URL ? `${process.env.BACKEND_URL}/api/auth/google/callback` : 'https://afterglow-cosmetic-backend.onrender.com/api/auth/google/callback'
 },
     async (accessToken, refreshToken, profile, done) => {
         try {

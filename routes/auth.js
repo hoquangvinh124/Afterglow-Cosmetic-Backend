@@ -4,7 +4,7 @@ const passport = require('passport');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'afterglow_luxury_secret_key_2026';
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:4200';
+const CLIENT_URL = process.env.CLIENT_URL || 'https://afterglow-cosmetic.vercel.app';
 
 // Start Google OAuth flow
 router.get('/google',
