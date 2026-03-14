@@ -1,9 +1,12 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-    googleId: { type: String, required: true, unique: true },
+    // googleId is optional — only present for Google OAuth accounts
+    googleId: { type: String, unique: true, sparse: true },
     email: { type: String, required: true, unique: true },
     name: { type: String, required: true },
+    // password is optional — only for email/password accounts (stored as bcrypt hash)
+    password: { type: String },
     phone: { type: String },
     avatar: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },

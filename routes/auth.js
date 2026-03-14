@@ -2,9 +2,19 @@ const express = require('express');
 const router = express.Router();
 const passport = require('passport');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'afterglow_luxury_secret_key_2026';
 const CLIENT_URL = process.env.CLIENT_URL || 'https://afterglow-cosmetic.vercel.app';
+
+// Helper: create JWT token (7 days)
+function createToken(user) {
+    return jwt.sign(
+        { id: user._id, email: user.email, name: user.name, role: user.role, avatar: user.avatar || '' },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+    );
+}
 
 // Start Google OAuth flow
 router.get('/google',
@@ -15,18 +25,87 @@ router.get('/google',
 router.get('/google/callback',
     passport.authenticate('google', { session: false, failureRedirect: `${CLIENT_URL}/login?error=auth_failed` }),
     (req, res) => {
-        // Create JWT token
-        const token = jwt.sign(
-            { id: req.user._id, email: req.user.email, name: req.user.name, role: req.user.role, avatar: req.user.avatar },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-        // Redirect to frontend with token
+        const token = createToken(req.user);
         res.redirect(`${CLIENT_URL}/login?token=${token}`);
     }
 );
 
 const User = require('../models/User');
+
+// ==========================================
+// 📧 EMAIL / PASSWORD AUTH ENDPOINTS
+// ==========================================
+
+// Check if an email is already registered
+router.post('/check-email', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+    try {
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        return res.json({ success: true, exists: !!user });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Register with email & password
+router.post('/register', async (req, res) => {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password)
+        return res.status(400).json({ success: false, message: 'Name, email and password are required' });
+    if (password.length < 6)
+        return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    try {
+        const existing = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existing)
+            return res.status(409).json({ success: false, message: 'Email already in use' });
+
+        const hashed = await bcrypt.hash(password, 12);
+        const user = await User.create({
+            name: name.trim(),
+            email: email.toLowerCase().trim(),
+            password: hashed,
+            role: 'user',
+            avatar: ''
+        });
+        const token = createToken(user);
+        return res.status(201).json({
+            success: true,
+            token,
+            user: { id: user._id, name: user.name, email: user.email, role: user.role, avatar: user.avatar }
+        });
+    } catch (err) {
+        console.error('[register] Error:', err.message, err.code);
+        return res.status(500).json({ success: false, message: 'Registration failed' });
+    }
+});
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password)
+        return res.status(400).json({ success: false, message: 'Email and password are required' });
+    try {
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user)
+            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+
+        // Google-only accounts have no local password
+        if (!user.password)
+            return res.status(401).json({ success: false, message: 'This account uses Google Sign-In. Please continue with Google.' });
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch)
+            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+
+        const token = createToken(user);
+        return res.json({
+            success: true,
+            token,
+            user: { id: user._id, name: user.name, email: user.email, role: user.role, avatar: user.avatar }
+        });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: 'Login failed' });
+    }
+});
 
 // Get current user info (verify token)
 router.get('/me', async (req, res) => {
