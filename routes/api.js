@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const Product  = require('../models/Product');
 const Order    = require('../models/Order');
 const Customer = require('../models/Customer');
+const Review   = require('../models/Review');
 
 // ─── MoMo Helper ────────────────────────────────────────────
 const MOMO_PARTNER_CODE = process.env.MOMO_PARTNER_CODE || 'MOMO';
@@ -230,6 +231,9 @@ router.post('/orders', async (req, res) => {
         }
 
         // ── COD / other methods ──────────────────────────────
+        const emailService = require('../services/emailService');
+        emailService.sendOrderConfirmation(email, newOrder);
+
         return res.status(201).json({
             success: true,
             data: { orderId: newOrder._id, totalAmount, status: newOrder.status },
@@ -302,194 +306,183 @@ router.delete('/customers/:id', async (req, res) => {
     }
 });
 
-module.exports = router;
+// ==========================================
+// 📧 TEST EMAIL ROUTES
+// ==========================================
 
-// ==========================================
-// 📊 DASHBOARD STATS
-// ==========================================
-router.get('/dashboard/stats', async (req, res) => {
+const emailService = require('../services/emailService');
+
+router.get('/test/welcome', async (req, res) => {
     try {
-        const totalProducts = await Product.countDocuments();
-        const totalOrders = await Order.countDocuments();
-        const totalCustomers = await Customer.countDocuments();
+        const testEmail = process.env.TEST_EMAIL || 'hoquangvinh124@gmail.com';
+        await emailService.sendWelcomeEmail(testEmail, 'Hồ Quang Vinh');
+        res.json({ success: true, message: `Welcome email sent to ${testEmail}` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error sending welcome email', error: error.message });
+    }
+});
 
-        const pendingOrders = await Order.countDocuments({ status: 'Pending' });
-        const outOfStock = await Product.countDocuments({ stock: 0 });
+router.get('/test/order-confirmation-2', async (req, res) => {
+    try {
+        const testEmail = process.env.TEST_EMAIL || 'hoquangvinh124@gmail.com';
+        const dummyOrder = {
+            _id: 'TEST-' + Math.floor(Math.random() * 100000),
+            customerName: 'Hồ Quang Vinh',
+            paymentMethod: 'cod',
+            totalAmount: 185.00,
+            items: [
+                { productId: 'Afterglow Velvet Lipstick', quantity: 2, priceAtPurchase: 35.00 },
+                { productId: 'Luminous Silk Foundation', quantity: 1, priceAtPurchase: 115.00 }
+            ]
+        };
+        await emailService.sendOrderConfirmation(testEmail, dummyOrder);
+        res.json({ success: true, message: `Order confirmation email sent to ${testEmail}` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error sending order confirmation', error: error.message });
+    }
+});
 
-        // Calculate total revenue
-        const revenueResult = await Order.aggregate([
-            { $match: { status: { $ne: 'Cancelled' } } },
-            { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } }
-        ]);
-        const totalRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
+// ==========================================
+// ⭐ REVIEW ROUTES
+// ==========================================
 
-        // Recent orders (last 5)
-        const recentOrders = await Order.find().sort({ createdAt: -1 }).limit(5);
+router.get('/products/:id/reviews', async (req, res) => {
+    try {
+        const reviews = await Review.find({ product: req.params.id }).sort({ createdAt: -1 });
+        const product = await Product.findById(req.params.id);
+        const averageRating = product ? product.rating : 0;
+        
+        const mappedReviews = reviews.map(r => ({
+            id: r._id,
+            date: r.createdAt ? r.createdAt.toISOString() : new Date().toISOString(),
+            reviewerName: r.reviewerName,
+            location: r.location,
+            isVerified: r.isVerified,
+            skinType: r.skinType,
+            skinShade: r.skinShade,
+            ageRange: r.ageRange,
+            rating: r.rating,
+            title: r.title,
+            content: r.content,
+            recommend: r.recommend,
+            upvotes: r.upvotes,
+            downvotes: r.downvotes,
+            currentUserVote: null
+        }));
 
         res.json({
             success: true,
             data: {
-                totalProducts,
-                totalOrders,
-                totalCustomers,
-                totalRevenue,
-                pendingOrders,
-                outOfStock,
-                recentOrders
+                reviews: mappedReviews,
+                averageRating: averageRating,
+                totalReviews: mappedReviews.length
             }
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error fetching dashboard stats', error: error.message });
+        res.status(500).json({ success: false, message: 'Server Error fetching reviews', error: error.message });
     }
 });
 
-// ==========================================
-// 🛒 PRODUCT ROUTES
-// ==========================================
-
-// Get All Products
-router.get('/products', async (req, res) => {
-    try {
-        const products = await Product.find().sort({ createdAt: -1 });
-        res.json({ success: true, count: products.length, data: products });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error fetching products', error: error.message });
-    }
-});
-
-// Get Single Product
-router.get('/products/:id', async (req, res) => {
+router.post('/products/:id/reviews', async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json({ success: true, data: product });
+
+        const newReview = await Review.create({
+            product: product._id,
+            reviewerName: req.body.reviewerName || 'Afterglow Customer',
+            location: req.body.location || '',
+            isVerified: true,
+            skinType: req.body.skinType || '',
+            skinShade: req.body.skinShade || '',
+            ageRange: req.body.ageRange || '',
+            rating: req.body.rating,
+            title: req.body.title,
+            content: req.body.body || req.body.content,
+            recommend: req.body.rating >= 4,
+            upvotes: 0,
+            downvotes: 0
+        });
+
+        // Update Product aggregate rating
+        const allReviews = await Review.find({ product: product._id });
+        const reviewSum = allReviews.reduce((sum, r) => sum + r.rating, 0);
+        const newAverage = Number((reviewSum / allReviews.length).toFixed(1));
+
+        product.rating = newAverage;
+        product.reviewCount = allReviews.length;
+        await product.save();
+
+        const mappedReview = {
+            id: newReview._id,
+            date: newReview.createdAt.toISOString(),
+            reviewerName: newReview.reviewerName,
+            location: newReview.location,
+            isVerified: newReview.isVerified,
+            skinType: newReview.skinType,
+            skinShade: newReview.skinShade,
+            ageRange: newReview.ageRange,
+            rating: newReview.rating,
+            title: newReview.title,
+            content: newReview.content,
+            recommend: newReview.recommend,
+            upvotes: newReview.upvotes,
+            downvotes: newReview.downvotes,
+            currentUserVote: null
+        };
+
+        res.status(201).json({ 
+            success: true, 
+            data: {
+                review: mappedReview,
+                averageRating: newAverage,
+                totalReviews: allReviews.length
+            }
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error fetching product', error: error.message });
+        res.status(400).json({ success: false, message: 'Error creating review', error: error.message });
     }
 });
 
-// Create Product
-router.post('/products', async (req, res) => {
+router.put('/products/:id/reviews/:reviewId/vote', async (req, res) => {
     try {
-        const newProduct = await Product.create(req.body);
-        res.status(201).json({ success: true, data: newProduct });
+        const { value, previousVote } = req.body;
+        const review = await Review.findById(req.params.reviewId);
+        
+        if (!review) return res.status(404).json({ success: false, message: 'Review not found' });
+
+        // Reverse previous vote
+        if (previousVote === 'up') review.upvotes = Math.max(0, review.upvotes - 1);
+        if (previousVote === 'down') review.downvotes = Math.max(0, review.downvotes - 1);
+
+        // Apply new vote
+        if (value === 'up') review.upvotes += 1;
+        if (value === 'down') review.downvotes += 1;
+
+        await review.save();
+
+        res.json({ 
+            success: true, 
+            data: {
+                id: review._id,
+                date: review.createdAt.toISOString(),
+                reviewerName: review.reviewerName,
+                location: review.location,
+                isVerified: review.isVerified,
+                skinType: review.skinType,
+                skinShade: review.skinShade,
+                ageRange: review.ageRange,
+                rating: review.rating,
+                title: review.title,
+                content: review.content,
+                recommend: review.recommend,
+                upvotes: review.upvotes,
+                downvotes: review.downvotes,
+                currentUserVote: value
+            }
+        });
     } catch (error) {
-        res.status(400).json({ success: false, message: 'Error creating product', error: error.message });
-    }
-});
-
-// Update Product
-router.put('/products/:id', async (req, res) => {
-    try {
-        const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-        if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json({ success: true, data: product });
-    } catch (error) {
-        res.status(400).json({ success: false, message: 'Error updating product', error: error.message });
-    }
-});
-
-// Delete Product
-router.delete('/products/:id', async (req, res) => {
-    try {
-        const product = await Product.findByIdAndDelete(req.params.id);
-        if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json({ success: true, message: 'Product deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error deleting product', error: error.message });
-    }
-});
-
-// ==========================================
-// 📦 ORDER ROUTES
-// ==========================================
-
-// Get All Orders
-router.get('/orders', async (req, res) => {
-    try {
-        const orders = await Order.find().sort({ createdAt: -1 });
-        res.json({ success: true, count: orders.length, data: orders });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error fetching orders', error: error.message });
-    }
-});
-
-// Create Order
-router.post('/orders', async (req, res) => {
-    try {
-        const newOrder = await Order.create(req.body);
-        res.status(201).json({ success: true, data: newOrder });
-    } catch (error) {
-        res.status(400).json({ success: false, message: 'Error creating order', error: error.message });
-    }
-});
-
-// Update Order Status
-router.put('/orders/:id/status', async (req, res) => {
-    try {
-        const { status } = req.body;
-        const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true, runValidators: true });
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-        res.json({ success: true, data: order });
-    } catch (error) {
-        res.status(400).json({ success: false, message: 'Error updating order status', error: error.message });
-    }
-});
-
-// Delete Order
-router.delete('/orders/:id', async (req, res) => {
-    try {
-        const order = await Order.findByIdAndDelete(req.params.id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-        res.json({ success: true, message: 'Order deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error deleting order', error: error.message });
-    }
-});
-
-// ==========================================
-// 👥 CUSTOMER ROUTES
-// ==========================================
-
-// Get All Customers
-router.get('/customers', async (req, res) => {
-    try {
-        const customers = await Customer.find().sort({ createdAt: -1 });
-        res.json({ success: true, count: customers.length, data: customers });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error fetching customers', error: error.message });
-    }
-});
-
-// Create Customer
-router.post('/customers', async (req, res) => {
-    try {
-        const newCustomer = await Customer.create(req.body);
-        res.status(201).json({ success: true, data: newCustomer });
-    } catch (error) {
-        res.status(400).json({ success: false, message: 'Error creating customer', error: error.message });
-    }
-});
-
-// Update Customer
-router.put('/customers/:id', async (req, res) => {
-    try {
-        const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-        if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
-        res.json({ success: true, data: customer });
-    } catch (error) {
-        res.status(400).json({ success: false, message: 'Error updating customer', error: error.message });
-    }
-});
-
-// Delete Customer
-router.delete('/customers/:id', async (req, res) => {
-    try {
-        const customer = await Customer.findByIdAndDelete(req.params.id);
-        if (!customer) return res.status(404).json({ success: false, message: 'Customer not found' });
-        res.json({ success: true, message: 'Customer deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error deleting customer', error: error.message });
+        res.status(400).json({ success: false, message: 'Error voting on review', error: error.message });
     }
 });
 

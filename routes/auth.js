@@ -68,6 +68,11 @@ router.post('/register', async (req, res) => {
             role: 'user',
             avatar: ''
         });
+        
+        // Send welcome email asynchronously
+        const emailService = require('../services/emailService');
+        emailService.sendWelcomeEmail(user.email, user.name);
+
         const token = createToken(user);
         return res.status(201).json({
             success: true,
@@ -116,14 +121,16 @@ router.get('/me', async (req, res) => {
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
 
+        // Internal admin account has a non-ObjectId ID — short-circuit before DB query
+        // to prevent Mongoose CastError that would incorrectly return 401
+        if (decoded.id === 'admin-internal-id') {
+            return res.json({ success: true, data: decoded });
+        }
+
         // Find user in DB and populate wishlist
         const user = await User.findById(decoded.id).populate('wishlist.product');
 
         if (!user) {
-            // Fallback for Admin account defined in .env
-            if (decoded.role === 'admin') {
-                return res.json({ success: true, data: decoded });
-            }
             return res.status(404).json({ success: false, message: 'User not found in database' });
         }
 

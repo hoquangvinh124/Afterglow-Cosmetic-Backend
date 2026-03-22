@@ -50,12 +50,17 @@ router.post('/momo/notify', async (req, res) => {
 
         // 3. resultCode === 0 means success
         const paid = resultCode === 0;
-        await Order.findByIdAndUpdate(order._id, {
+        const updatedOrder = await Order.findByIdAndUpdate(order._id, {
             paymentStatus: paid ? 'Paid' : 'Failed',
             status:        paid ? 'Processing' : 'Pending',
-        });
+        }, { new: true });
 
         console.log(`[MoMo IPN] Order ${order._id} payment ${paid ? 'SUCCESS' : 'FAILED'}`);
+
+        if (paid) {
+            const emailService = require('../services/emailService');
+            emailService.sendOrderConfirmation(updatedOrder.email || updatedOrder.customerEmail || 'guest@afterglow.com', updatedOrder);
+        }
 
         // MoMo requires HTTP 204 on success acknowledgement
         return res.status(204).send();
