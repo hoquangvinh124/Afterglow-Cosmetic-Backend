@@ -74,9 +74,8 @@ router.post('/connection-details', requireAuth, async (req, res) => {
     });
 
     if (agentName) {
-        // ⚠️ Must use class instances, NOT plain objects — plain objects are not
-        // serialized into the JWT correctly by livekit-server-sdk.
-        const { RoomAgentDispatch, RoomConfiguration } = require('livekit-server-sdk');
+        // ⚠️ Must use class instances from @livekit/protocol, NOT plain objects.
+        const { RoomAgentDispatch, RoomConfiguration } = require('@livekit/protocol');
         at.roomConfig = new RoomConfiguration({
             agents: [
                 new RoomAgentDispatch({
