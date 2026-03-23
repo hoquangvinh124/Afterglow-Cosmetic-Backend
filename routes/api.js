@@ -2,10 +2,13 @@ const express = require('express');
 const router  = express.Router();
 const crypto  = require('crypto');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const Product  = require('../models/Product');
 const Order    = require('../models/Order');
 const Customer = require('../models/Customer');
 const Review   = require('../models/Review');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'afterglow_luxury_secret_key_2026';
 
 // ─── MoMo Helper ────────────────────────────────────────────
 const MOMO_PARTNER_CODE = process.env.MOMO_PARTNER_CODE || 'MOMO';
@@ -64,6 +67,43 @@ async function createMoMoPayment({ orderId, amount, orderInfo, returnUrl, notify
     return await response.json(); // contains { payUrl, orderId, ... }
 }
 
+function getUserFromAuthHeader(req) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return null;
+
+    const token = authHeader.split(' ')[1];
+    if (!token) return null;
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (!decoded?.id || !mongoose.Types.ObjectId.isValid(decoded.id)) return null;
+        return decoded;
+    } catch {
+        return null;
+    }
+}
+
+function extractObjectIdFromAny(value) {
+    if (typeof value !== 'string') return null;
+    if (mongoose.Types.ObjectId.isValid(value)) return value;
+
+    const match = value.match(/[a-fA-F0-9]{24}/);
+    if (match && mongoose.Types.ObjectId.isValid(match[0])) {
+        return match[0];
+    }
+
+    return null;
+}
+
+function extractVariantIdFromComposite(value) {
+    if (typeof value !== 'string' || !value.includes('_')) return null;
+    const parts = value.split('_');
+    if (parts.length < 2) return null;
+
+    const candidate = extractObjectIdFromAny(parts[1]);
+    return candidate || null;
+}
+
 // ==========================================
 // 📊 DASHBOARD STATS
 // ==========================================
@@ -93,7 +133,49 @@ router.get('/dashboard/stats', async (req, res) => {
 // ==========================================
 router.get('/products', async (req, res) => {
     try {
-        const products = await Product.find().sort({ createdAt: -1 });
+        const { q, category, minPrice, maxPrice } = req.query;
+        const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const query = {};
+
+        if (typeof q === 'string' && q.trim()) {
+            const keyword = escapeRegex(q.trim());
+            query.$or = [
+                { name: { $regex: keyword, $options: 'i' } },
+                { description: { $regex: keyword, $options: 'i' } },
+                { category: { $regex: keyword, $options: 'i' } },
+                { subCategory: { $regex: keyword, $options: 'i' } }
+            ];
+        }
+
+        if (typeof category === 'string' && category.trim()) {
+            const normalizedCategory = escapeRegex(category.trim());
+            query.$and = [
+                ...(Array.isArray(query.$and) ? query.$and : []),
+                {
+                    $or: [
+                        { category: { $regex: `^${normalizedCategory}$`, $options: 'i' } },
+                        { subCategory: { $regex: `^${normalizedCategory}$`, $options: 'i' } }
+                    ]
+                }
+            ];
+        }
+
+        const min = Number(minPrice);
+        const max = Number(maxPrice);
+
+        if (Number.isFinite(min) || Number.isFinite(max)) {
+            query.price = {};
+
+            if (Number.isFinite(min)) {
+                query.price.$gte = min;
+            }
+
+            if (Number.isFinite(max)) {
+                query.price.$lte = max;
+            }
+        }
+
+        const products = await Product.find(query).sort({ createdAt: -1 });
         res.json({ success: true, count: products.length, data: products });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error fetching products', error: error.message });
@@ -155,6 +237,7 @@ router.get('/orders', async (req, res) => {
 router.post('/orders', async (req, res) => {
     try {
         const { items, shippingAddress, billingAddress, paymentMethod, shippingMethod, discountCode, note } = req.body;
+        const authUser = getUserFromAuthHeader(req);
 
         if (!items || items.length === 0) {
             return res.status(400).json({ success: false, message: 'Order must contain at least one item' });
@@ -166,17 +249,37 @@ router.post('/orders', async (req, res) => {
         const customerName = shippingAddress
             ? `${shippingAddress.firstName || ''} ${shippingAddress.lastName || ''}`.trim()
             : 'Guest';
-        const email = shippingAddress?.email || billingAddress?.email || 'guest@afterglow.com';
+        const email = shippingAddress?.email || billingAddress?.email || authUser?.email || 'guest@afterglow.com';
 
         // Map items to DB schema — guard against non-ObjectId productId to prevent CastError
-        const mappedItems = items.map(item => ({
-            product:         mongoose.Types.ObjectId.isValid(item.productId) ? item.productId : null,
-            productId:       item.productId,
-            quantity:        item.quantity,
-            priceAtPurchase: item.price,
-        }));
+        const mappedItems = items.map(item => {
+            const rawProductId = typeof item.productId === 'string' ? item.productId : '';
+            const rawLegacyId = typeof item.id === 'string' ? item.id : '';
+
+            const canonicalProductId =
+                extractObjectIdFromAny(rawProductId) ||
+                extractObjectIdFromAny(rawLegacyId) ||
+                null;
+
+            const variantId =
+                (typeof item.variantId === 'string' && item.variantId.trim())
+                    ? item.variantId.trim()
+                    : extractVariantIdFromComposite(rawProductId) || extractVariantIdFromComposite(rawLegacyId);
+
+            return {
+                product:         canonicalProductId,
+                productId:       canonicalProductId || rawProductId || rawLegacyId || null,
+                productName:     item.productName || item.name || null,
+                imageUrl:        item.imageUrl || item.image || null,
+                variantId:       variantId || null,
+                variantName:     item.variantName || null,
+                quantity:        item.quantity,
+                priceAtPurchase: item.price,
+            };
+        });
 
         const newOrder = await Order.create({
+            userId:          authUser ? authUser.id : null,
             customerName,
             email,
             items:           mappedItems,
@@ -306,41 +409,7 @@ router.delete('/customers/:id', async (req, res) => {
     }
 });
 
-// ==========================================
-// 📧 TEST EMAIL ROUTES
-// ==========================================
 
-const emailService = require('../services/emailService');
-
-router.get('/test/welcome', async (req, res) => {
-    try {
-        const testEmail = process.env.TEST_EMAIL || 'hoquangvinh124@gmail.com';
-        await emailService.sendWelcomeEmail(testEmail, 'Hồ Quang Vinh');
-        res.json({ success: true, message: `Welcome email sent to ${testEmail}` });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error sending welcome email', error: error.message });
-    }
-});
-
-router.get('/test/order-confirmation-2', async (req, res) => {
-    try {
-        const testEmail = process.env.TEST_EMAIL || 'hoquangvinh124@gmail.com';
-        const dummyOrder = {
-            _id: 'TEST-' + Math.floor(Math.random() * 100000),
-            customerName: 'Hồ Quang Vinh',
-            paymentMethod: 'cod',
-            totalAmount: 185.00,
-            items: [
-                { productId: 'Afterglow Velvet Lipstick', quantity: 2, priceAtPurchase: 35.00 },
-                { productId: 'Luminous Silk Foundation', quantity: 1, priceAtPurchase: 115.00 }
-            ]
-        };
-        await emailService.sendOrderConfirmation(testEmail, dummyOrder);
-        res.json({ success: true, message: `Order confirmation email sent to ${testEmail}` });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error sending order confirmation', error: error.message });
-    }
-});
 
 // ==========================================
 // ⭐ REVIEW ROUTES

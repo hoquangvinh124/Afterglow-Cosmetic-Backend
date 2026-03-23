@@ -63,12 +63,10 @@ const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const agentApiRoutes = require('./routes/agent-api');
 const livekitRoutes = require('./routes/livekit');
-const paymentRoutes = require('./routes/payment');
 app.use('/api', apiRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/agent', agentApiRoutes);
 app.use('/api/agent', livekitRoutes);
-app.use('/api/payment', paymentRoutes);
 
 // Health Check
 app.get('/api/health', (req, res) => {

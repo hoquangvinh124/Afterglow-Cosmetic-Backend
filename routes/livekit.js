@@ -47,26 +47,13 @@ router.post('/token', requireAuth, async (req, res) => {
 });
 
 // ── POST /api/agent/connection-details ──────────────────────────────────────
-// Generate a LiveKit participant token with agent dispatch (TTL: 15m)
-//
-// Body params:
-//   roomName            (optional) custom room name
-//   participantName     (optional) display name
-//   participantIdentity (optional) unique identity
-//   agentType           "shop-assistant" | "dermatologist" | "makeup-artist"
-//                       defaults to "shop-assistant"
+// Generate a LiveKit participant token with optional agent dispatch (TTL: 15m)
 router.post('/connection-details', requireAuth, async (req, res) => {
-    const { roomName, participantName, participantIdentity, agentType } = req.body;
+    const { roomName, participantName, participantIdentity, agentName } = req.body;
 
     const room     = roomName          || 'voice_agent_room_' + Math.random().toString(36).substring(2, 8);
     const name     = participantName   || req.user.name || 'User';
     const identity = participantIdentity || `user_${req.user.id || Math.random().toString(36).substring(2, 8)}`;
-    const type     = agentType         || 'shop-assistant';
-
-    const VALID_TYPES = ['shop-assistant', 'dermatologist', 'makeup-artist'];
-    if (!VALID_TYPES.includes(type)) {
-        return res.status(400).json({ success: false, message: `Invalid agentType. Must be one of: ${VALID_TYPES.join(', ')}` });
-    }
 
     if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
         return res.status(500).json({ success: false, message: 'LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set' });
@@ -86,13 +73,11 @@ router.post('/connection-details', requireAuth, async (req, res) => {
         canSubscribe: true,
     });
 
-    // Dispatch agent "afterglow-agents" với metadata chứa type để agent Python routing đúng
-    at.roomConfig = {
-        agents: [{
-            agentName: 'afterglow-agents',
-            metadata: JSON.stringify({ type }),
-        }],
-    };
+    if (agentName) {
+        at.roomConfig = {
+            agents: [{ agentName }],
+        };
+    }
 
     const participantToken = await at.toJwt();
 
@@ -101,7 +86,6 @@ router.post('/connection-details', requireAuth, async (req, res) => {
         participantToken,
         participantName: name,
         roomName: room,
-        agentType: type,
     });
 });
 

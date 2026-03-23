@@ -294,8 +294,13 @@ router.get('/orders', async (req, res) => {
         const user = await User.findById(decoded.id);
         if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-        // Orders are matched by email
-        const orders = await Order.find({ email: user.email }).sort({ createdAt: -1 }).populate('items.product');
+        // Support both legacy email-based orders and new userId-linked orders
+        const orders = await Order.find({
+            $or: [
+                { userId: user._id },
+                { email: user.email }
+            ]
+        }).sort({ createdAt: -1 }).populate('items.product');
         res.json({ success: true, data: orders });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error fetching orders' });

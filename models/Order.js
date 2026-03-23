@@ -23,6 +23,10 @@ const orderSchema = new mongoose.Schema({
     items: [{
         product:          { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
         productId:        { type: String },   // raw string fallback
+        productName:      { type: String },
+        imageUrl:         { type: String },
+        variantId:        { type: String },
+        variantName:      { type: String },
         quantity:         { type: Number, required: true, min: 1 },
         priceAtPurchase:  { type: Number, required: true },
     }],
