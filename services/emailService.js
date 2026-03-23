@@ -5,6 +5,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const FROM_EMAIL = process.env.EMAIL_FROM;
 const WELCOME_TEMPLATE_ALIAS = 'welcome';
 const ORDER_TEMPLATE_ALIAS = 'order-confirmation-2';
+const OTP_TEMPLATE_ALIAS = 'otp-verification';
 const FRONTEND_URL = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
 
 const templateIdCache = new Map();
@@ -193,6 +194,59 @@ class EmailService {
             }
         } catch (err) {
             console.error('[EmailService] Exception sending order confirmation email:', err);
+        }
+    }
+
+    /**
+     * Send OTP verification code email
+     * @param {string} email - User's email
+     * @param {string} name - User's name
+     * @param {string} otp - 6-digit OTP code
+     * @param {string} purpose - 'forgot-password' or 'change-password'
+     */
+    async sendOTPEmail(email, name, otp, purpose) {
+        if (!RESEND_API_KEY || !FROM_EMAIL) {
+            console.warn('⚠️ RESEND_API_KEY and EMAIL_FROM are required. Skipping OTP email.');
+            return;
+        }
+
+        try {
+            const resend = getResendClient();
+            const templateId = await resolveTemplateIdByAlias(OTP_TEMPLATE_ALIAS);
+            if (!templateId) {
+                console.error('[EmailService] OTP email skipped because template alias could not be resolved.');
+                return;
+            }
+
+            const purposeText = purpose === 'forgot-password'
+                ? 'reset your password'
+                : 'verify your password change';
+
+            const { data, error } = await resend.emails.send({
+                from: FROM_EMAIL,
+                to: email,
+                subject: 'Your Afterglow Verification Code',
+                template: {
+                    id: templateId,
+                    variables: {
+                        name: name || '',
+                        otp: otp,
+                        purpose: purposeText,
+                        expiresInMinutes: '10'
+                    }
+                }
+            });
+
+            if (error) {
+                console.error('[EmailService] Error sending OTP email:', error);
+                if (String(error?.message || '').toLowerCase().includes('verify')) {
+                    console.error('[EmailService] Resend likely blocked this recipient. On free tier, recipient usually must be verified.');
+                }
+            } else {
+                console.log(`[EmailService] OTP email sent successfully to ${email}. ID: ${data.id}`);
+            }
+        } catch (err) {
+            console.error('[EmailService] Exception sending OTP email:', err);
         }
     }
 }

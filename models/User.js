@@ -10,6 +10,15 @@ const userSchema = new mongoose.Schema({
     phone: { type: String },
     avatar: { type: String },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    // OTP for password reset/change
+    otp: {
+        code: { type: String },              // Hashed OTP using bcrypt
+        createdAt: { type: Date },           // For expiration check (10 minutes)
+        purpose: { type: String, enum: ['forgot-password', 'change-password'] }
+    },
+    otpAttempts: [{
+        requestedAt: { type: Date }          // Track rate limiting (max 3/hour)
+    }],
     addresses: [{
         firstName: String,
         lastName: String,

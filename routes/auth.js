@@ -16,6 +16,15 @@ function createToken(user) {
     );
 }
 
+// Helper: create temporary password reset token (5 minutes)
+function createResetToken(user) {
+    return jwt.sign(
+        { id: user._id, email: user.email, passwordResetAllowed: true },
+        JWT_SECRET,
+        { expiresIn: '5m' }
+    );
+}
+
 // Start Google OAuth flow
 router.get('/google',
     passport.authenticate('google', { scope: ['profile', 'email'] })
@@ -31,6 +40,8 @@ router.get('/google/callback',
 );
 
 const User = require('../models/User');
+const otpService = require('../services/otpService');
+const emailService = require('../services/emailService');
 
 // ==========================================
 // 📧 EMAIL / PASSWORD AUTH ENDPOINTS
@@ -109,6 +120,290 @@ router.post('/login', async (req, res) => {
         });
     } catch (err) {
         return res.status(500).json({ success: false, message: 'Login failed' });
+    }
+});
+
+// ==========================================
+// 🔐 OTP-BASED PASSWORD RESET & CHANGE
+// ==========================================
+
+// Request OTP (for forgot-password or change-password)
+router.post('/request-otp', async (req, res) => {
+    const { email, purpose } = req.body;
+
+    // Validate inputs
+    if (!email || !purpose) {
+        return res.status(400).json({ success: false, message: 'Email and purpose are required' });
+    }
+
+    if (!['forgot-password', 'change-password'].includes(purpose)) {
+        return res.status(400).json({ success: false, message: 'Invalid purpose' });
+    }
+
+    try {
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+        // Security: Don't reveal if email exists (prevent user enumeration)
+        // Always return success, but only send email if user exists
+        if (!user) {
+            return res.json({
+                success: true,
+                message: 'If an account exists with this email, an OTP has been sent.',
+                expiresIn: 600
+            });
+        }
+
+        // Check if user has a password (Google OAuth users don't)
+        if (!user.password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot reset password for Google accounts. Please use Google Sign-In.'
+            });
+        }
+
+        // Check rate limiting
+        if (!otpService.canRequestOTP(user)) {
+            const remainingTime = otpService.getRateLimitRemainingTime(user);
+            return res.status(429).json({
+                success: false,
+                message: `Too many OTP requests. Please try again in ${remainingTime} minutes.`,
+                retryAfter: remainingTime
+            });
+        }
+
+        // Generate OTP
+        const otp = otpService.generateOTP();
+        const hashedOTP = await otpService.hashOTP(otp);
+
+        // Save hashed OTP to user
+        user.otp = {
+            code: hashedOTP,
+            createdAt: new Date(),
+            purpose: purpose
+        };
+
+        // Add attempt for rate limiting
+        otpService.addAttempt(user);
+
+        await user.save();
+
+        // Send OTP email
+        emailService.sendOTPEmail(user.email, user.name, otp, purpose);
+
+        console.log(`[OTP] Generated OTP for ${user.email} (purpose: ${purpose})`);
+
+        return res.json({
+            success: true,
+            message: 'OTP sent to your email address',
+            expiresIn: 600
+        });
+    } catch (err) {
+        console.error('[request-otp] Error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to send OTP' });
+    }
+});
+
+// Verify OTP
+router.post('/verify-otp', async (req, res) => {
+    const { email, otp, purpose } = req.body;
+
+    if (!email || !otp || !purpose) {
+        return res.status(400).json({ success: false, message: 'Email, OTP, and purpose are required' });
+    }
+
+    try {
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        // Check if OTP exists
+        if (!user.otp || !user.otp.code) {
+            return res.status(400).json({ success: false, message: 'No OTP found. Please request a new one.' });
+        }
+
+        // Check if OTP expired
+        if (otpService.isExpired(user)) {
+            otpService.clearOTP(user);
+            await user.save();
+            return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
+        }
+
+        // Check if purpose matches
+        if (user.otp.purpose !== purpose) {
+            return res.status(400).json({ success: false, message: 'Invalid OTP purpose' });
+        }
+
+        // Verify OTP
+        const isValid = await otpService.verifyOTP(user, otp);
+
+        if (!isValid) {
+            return res.status(400).json({ success: false, message: 'Invalid OTP code' });
+        }
+
+        // OTP is valid - for forgot-password, return temporary reset token
+        if (purpose === 'forgot-password') {
+            const resetToken = createResetToken(user);
+            return res.json({
+                success: true,
+                message: 'OTP verified successfully',
+                token: resetToken
+            });
+        }
+
+        // For change-password, just confirm verification (actual password change happens in /change-password)
+        return res.json({
+            success: true,
+            message: 'OTP verified successfully'
+        });
+    } catch (err) {
+        console.error('[verify-otp] Error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
+    }
+});
+
+// Reset password (requires temporary reset token from verify-otp)
+router.post('/reset-password', async (req, res) => {
+    const { email, newPassword, resetToken } = req.body;
+
+    if (!email || !newPassword || !resetToken) {
+        return res.status(400).json({ success: false, message: 'Email, new password, and reset token are required' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        // Verify reset token
+        const decoded = jwt.verify(resetToken, JWT_SECRET);
+
+        // Check if token is a password reset token
+        if (!decoded.passwordResetAllowed) {
+            return res.status(401).json({ success: false, message: 'Invalid reset token' });
+        }
+
+        // Check if email matches
+        if (decoded.email !== email.toLowerCase().trim()) {
+            return res.status(401).json({ success: false, message: 'Email mismatch' });
+        }
+
+        const user = await User.findById(decoded.id);
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+        // Update password and clear OTP
+        user.password = hashedPassword;
+        otpService.clearOTP(user);
+        await user.save();
+
+        console.log(`[reset-password] Password reset successful for ${user.email}`);
+
+        return res.json({
+            success: true,
+            message: 'Password reset successfully. You can now log in with your new password.'
+        });
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ success: false, message: 'Reset token has expired. Please request a new OTP.' });
+        }
+        if (err.name === 'JsonWebTokenError') {
+            return res.status(401).json({ success: false, message: 'Invalid reset token' });
+        }
+        console.error('[reset-password] Error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to reset password' });
+    }
+});
+
+// Change password (requires authentication + OTP verification)
+router.post('/change-password', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+        return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const { currentPassword, newPassword, otp } = req.body;
+
+    if (!currentPassword || !newPassword || !otp) {
+        return res.status(400).json({ success: false, message: 'Current password, new password, and OTP are required' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await User.findById(decoded.id);
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        // Check if user has a password (Google OAuth users don't)
+        if (!user.password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot change password for Google accounts'
+            });
+        }
+
+        // Verify current password
+        const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+        if (!isCurrentPasswordValid) {
+            return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+        }
+
+        // Check if OTP exists
+        if (!user.otp || !user.otp.code) {
+            return res.status(400).json({ success: false, message: 'No OTP found. Please request a new one.' });
+        }
+
+        // Check if OTP expired
+        if (otpService.isExpired(user)) {
+            otpService.clearOTP(user);
+            await user.save();
+            return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
+        }
+
+        // Check if OTP purpose is change-password
+        if (user.otp.purpose !== 'change-password') {
+            return res.status(400).json({ success: false, message: 'Invalid OTP for password change' });
+        }
+
+        // Verify OTP
+        const isOTPValid = await otpService.verifyOTP(user, otp);
+        if (!isOTPValid) {
+            return res.status(400).json({ success: false, message: 'Invalid OTP code' });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+        // Update password and clear OTP
+        user.password = hashedPassword;
+        otpService.clearOTP(user);
+        await user.save();
+
+        console.log(`[change-password] Password changed successfully for ${user.email}`);
+
+        return res.json({
+            success: true,
+            message: 'Password changed successfully'
+        });
+    } catch (err) {
+        if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+            return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+        }
+        console.error('[change-password] Error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to change password' });
     }
 });
 
