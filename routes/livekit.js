@@ -74,10 +74,16 @@ router.post('/connection-details', requireAuth, async (req, res) => {
     });
 
     if (agentName) {
+        // Dispatch to the unified Python agent server 'afterglow-agents' with metadata
+        // to tell it which agent class (dermatologist or makeup-artist) to start.
         at.roomConfig = {
-            agents: [{ agentName }],
+            agents: [{ 
+                agentName: 'afterglow-agents',
+                metadata: JSON.stringify({ type: agentName })
+            }],
         };
     }
+
 
     const participantToken = await at.toJwt();
 
