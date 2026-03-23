@@ -74,14 +74,17 @@ router.post('/connection-details', requireAuth, async (req, res) => {
     });
 
     if (agentName) {
-        // Dispatch to the unified Python agent server 'afterglow-agents' with metadata
-        // to tell it which agent class (dermatologist or makeup-artist) to start.
-        at.roomConfig = {
-            agents: [{ 
-                agentName: 'afterglow-agents',
-                metadata: JSON.stringify({ type: agentName })
-            }],
-        };
+        // ⚠️ Must use class instances, NOT plain objects — plain objects are not
+        // serialized into the JWT correctly by livekit-server-sdk.
+        const { RoomAgentDispatch, RoomConfiguration } = require('livekit-server-sdk');
+        at.roomConfig = new RoomConfiguration({
+            agents: [
+                new RoomAgentDispatch({
+                    agentName: 'afterglow-agents',
+                    metadata: JSON.stringify({ type: agentName }),
+                }),
+            ],
+        });
     }
 
 
