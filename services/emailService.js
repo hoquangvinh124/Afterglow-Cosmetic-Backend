@@ -2,7 +2,6 @@ const { Resend } = require('resend');
 const Product = require('../models/Product');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_EMAIL = process.env.EMAIL_FROM;
 const WELCOME_TEMPLATE_ALIAS = 'welcome';
 const ORDER_TEMPLATE_ALIAS = 'order-confirmation-2';
 const OTP_TEMPLATE_ALIAS = 'otp-verification';
@@ -107,8 +106,8 @@ class EmailService {
      * @param {string} name - User's name
      */
     async sendWelcomeEmail(email, name) {
-        if (!RESEND_API_KEY || !FROM_EMAIL) {
-            console.warn('⚠️ RESEND_API_KEY and EMAIL_FROM are required. Skipping welcome email.');
+        if (!RESEND_API_KEY) {
+            console.warn('⚠️ RESEND_API_KEY is required. Skipping welcome email.');
             return;
         }
 
@@ -121,8 +120,7 @@ class EmailService {
             }
 
             const { data, error } = await resend.emails.send({
-                from: FROM_EMAIL,
-                to: email, // If using free Resend tier without domain verification, this must be your verified email address.
+                to: email,
                 subject: 'Welcome to Afterglow Luxury Cosmetics!',
                 template: {
                     id: templateId,
@@ -148,8 +146,8 @@ class EmailService {
      * @param {Object} order - Order object containing details
      */
     async sendOrderConfirmation(email, order) {
-        if (!RESEND_API_KEY || !FROM_EMAIL) {
-            console.warn('⚠️ RESEND_API_KEY and EMAIL_FROM are required. Skipping order confirmation email.');
+        if (!RESEND_API_KEY) {
+            console.warn('⚠️ RESEND_API_KEY is required. Skipping order confirmation email.');
             return;
         }
 
@@ -167,8 +165,7 @@ class EmailService {
                 .join('\n');
 
             const { data, error } = await resend.emails.send({
-                from: FROM_EMAIL,
-                to: email, // If using free Resend tier without domain verification, this must be your verified email address.
+                to: email,
                 subject: `Order Confirmation #${order._id} - Afterglow`,
                 template: {
                     id: templateId,
@@ -205,8 +202,8 @@ class EmailService {
      * @param {string} purpose - 'forgot-password' or 'change-password'
      */
     async sendOTPEmail(email, name, otp, purpose) {
-        if (!RESEND_API_KEY || !FROM_EMAIL) {
-            console.warn('⚠️ RESEND_API_KEY and EMAIL_FROM are required. Skipping OTP email.');
+        if (!RESEND_API_KEY) {
+            console.warn('⚠️ RESEND_API_KEY is required. Skipping OTP email.');
             return;
         }
 
@@ -223,7 +220,6 @@ class EmailService {
                 : 'verify your password change';
 
             const { data, error } = await resend.emails.send({
-                from: FROM_EMAIL,
                 to: email,
                 subject: 'Your Afterglow Verification Code',
                 template: {

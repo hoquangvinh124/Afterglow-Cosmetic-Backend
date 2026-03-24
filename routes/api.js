@@ -7,6 +7,7 @@ const Product  = require('../models/Product');
 const Order    = require('../models/Order');
 const Customer = require('../models/Customer');
 const Review   = require('../models/Review');
+const User     = require('../models/User');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'afterglow_luxury_secret_key_2026';
 
@@ -233,6 +234,21 @@ router.get('/orders', async (req, res) => {
     }
 });
 
+// GET /api/orders/mine — fetch orders for the logged-in user
+router.get('/orders/mine', async (req, res) => {
+    try {
+        const authUser = getUserFromAuthHeader(req);
+        if (!authUser) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const orders = await Order.find({ userId: authUser.id }).sort({ createdAt: -1 });
+        res.json({ success: true, count: orders.length, data: orders });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error fetching your orders', error: error.message });
+    }
+});
+
 // POST /api/orders — create order, handle MoMo redirect
 router.post('/orders', async (req, res) => {
     try {
@@ -296,8 +312,10 @@ router.post('/orders', async (req, res) => {
         if (paymentMethod === 'momo') {
             try {
                 const momoOrderId = `AFTERGLOW_${newOrder._id}`;
-                const returnUrl   = `${process.env.FRONTEND_URL || 'http://localhost:4200'}/order-success?orderId=${newOrder._id}&method=momo`;
-                const notifyUrl   = `${process.env.BACKEND_URL  || 'http://localhost:5000'}/api/payment/momo/notify`;
+                const frontendBaseUrl = (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/$/, '');
+                const backendBaseUrl = (process.env.BACKEND_URL || 'https://afterglow-cosmetic-backend.onrender.com').replace(/\/$/, '');
+                const returnUrl = `${frontendBaseUrl}/order-success?orderId=${newOrder._id}&method=momo`;
+                const notifyUrl = `${backendBaseUrl}/api/payment/momo/notify`;
 
                 const momoRes = await createMoMoPayment({
                     orderId:   momoOrderId,
@@ -409,7 +427,139 @@ router.delete('/customers/:id', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🔐 ADMIN: GET ALL USERS WITH STATS
+// ==========================================
+router.get('/admin/users', async (req, res) => {
+    try {
+        // Fetch all users (both user and admin roles)
+        const users = await User.find().lean();
 
+        // Aggregate data for each user
+        const usersWithStats = await Promise.all(users.map(async (user) => {
+            // Find linked Customer
+            const customer = await Customer.findOne({ userId: user._id }).lean();
+
+            // Count wishlist
+            const wishlistCount = user.wishlist?.length || 0;
+
+            // Aggregate order statistics
+            const orders = await Order.find({
+                userId: user._id,
+                status: { $in: ['Delivered', 'Completed'] },
+                paymentStatus: 'Paid'
+            }).lean();
+
+            const orderCount = orders.length;
+            const totalSpentFromOrders = orders.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+
+            // Get all orders for last order date
+            const allOrders = await Order.find({ userId: user._id }).sort({ createdAt: -1 }).limit(1).lean();
+            const lastOrderDate = allOrders[0]?.createdAt || null;
+
+            return {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone || '',
+                role: user.role,
+                createdAt: user.createdAt,
+
+                // Counts
+                wishlistCount,
+
+                // Customer VIP info (if linked)
+                customer: customer ? {
+                    _id: customer._id,
+                    membershipLevel: customer.membershipLevel,
+                    totalSpent: customer.totalSpent,
+                    lastPurchaseDate: customer.lastPurchaseDate,
+                    status: customer.status
+                } : null,
+
+                // Order statistics
+                orderStats: {
+                    count: orderCount,
+                    totalSpent: totalSpentFromOrders,
+                    lastOrderDate
+                }
+            };
+        }));
+
+        res.json({
+            success: true,
+            count: usersWithStats.length,
+            data: usersWithStats
+        });
+    } catch (error) {
+        console.error('[Admin Users] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching users',
+            error: error.message
+        });
+    }
+});
+
+// ==========================================
+// 🔐 ADMIN: UPDATE USER
+// ==========================================
+router.put('/admin/users/:id', async (req, res) => {
+    try {
+        const { name, email, phone, role } = req.body;
+
+        const user = await User.findByIdAndUpdate(
+            req.params.id,
+            { name, email, phone, role },
+            { new: true, runValidators: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        // Sync to Customer if exists
+        const customer = await Customer.findOne({ userId: user._id });
+        if (customer) {
+            customer.name = user.name;
+            customer.email = user.email;
+            customer.phone = user.phone || customer.phone;
+            await customer.save();
+        }
+
+        res.json({ success: true, data: user });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: 'Error updating user',
+            error: error.message
+        });
+    }
+});
+
+// ==========================================
+// 🔐 ADMIN: DELETE USER
+// ==========================================
+router.delete('/admin/users/:id', async (req, res) => {
+    try {
+        const user = await User.findByIdAndDelete(req.params.id);
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        // Also delete linked Customer
+        await Customer.deleteOne({ userId: req.params.id });
+
+        res.json({ success: true, message: 'User deleted successfully' });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Error deleting user',
+            error: error.message
+        });
+    }
+});
 
 // ==========================================
 // ⭐ REVIEW ROUTES
