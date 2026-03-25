@@ -6,10 +6,14 @@ class VNPayService {
         this.secretKey = process.env.VNP_HASH_SECRET || 'IB35Y4KGVDKFGNGVEI1U6XTSA7SV6KR4';
         this.vnpUrl = process.env.VNP_URL || 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html';
         this.returnUrl = process.env.VNP_RETURN_URL || 'https://afterglow-cosmetic-backend.onrender.com/api/payment/vnpay/return';
+        this.usdToVndRate = 25000; // Standard exchange rate for Afterglow Luxury
     }
 
     createPaymentUrl(params) {
-        const { amount, orderId, orderInfo, ipAddress } = params;
+        let { amount, orderId, orderInfo, ipAddress } = params;
+        
+        // Convert USD to VND
+        const amountVnd = Math.round(amount * this.usdToVndRate);
         
         const date = new Date();
         const createDate = this.formatDate(date);
@@ -23,7 +27,7 @@ class VNPayService {
         vnp_Params['vnp_TxnRef'] = orderId;
         vnp_Params['vnp_OrderInfo'] = orderInfo;
         vnp_Params['vnp_OrderType'] = 'other';
-        vnp_Params['vnp_Amount'] = amount * 100;
+        vnp_Params['vnp_Amount'] = amountVnd * 100;
         vnp_Params['vnp_ReturnUrl'] = this.returnUrl;
         vnp_Params['vnp_IpAddr'] = ipAddress;
         vnp_Params['vnp_CreateDate'] = createDate;

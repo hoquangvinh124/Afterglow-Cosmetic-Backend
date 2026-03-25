@@ -118,14 +118,16 @@ router.get('/vnpay/ipn', async (req, res) => {
         if (isValid) {
             const orderId = vnp_Params['vnp_TxnRef'];
             const responseCode = vnp_Params['vnp_ResponseCode'];
-            const amount = vnp_Params['vnp_Amount'] / 100;
+            const amountVnd = vnp_Params['vnp_Amount'] / 100;
 
             const order = await Order.findById(orderId);
             if (!order) {
                 return res.status(200).json({ RspCode: '01', Message: 'Order not found' });
             }
 
-            if (order.totalAmount !== amount) {
+            // Verify amount (accounting for USD to VND conversion)
+            const expectedVnd = Math.round(order.totalAmount * 25000); 
+            if (Math.abs(expectedVnd - amountVnd) > 100) { // Allow small rounding diff
                 return res.status(200).json({ RspCode: '04', Message: 'Invalid amount' });
             }
 
