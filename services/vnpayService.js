@@ -5,7 +5,7 @@ class VNPayService {
         this.tmnCode = process.env.VNP_TMN_CODE || 'XO4STLLN';
         this.secretKey = process.env.VNP_HASH_SECRET || 'IB35Y4KGVDKFGNGVEI1U6XTSA7SV6KR4';
         this.vnpUrl = process.env.VNP_URL || 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html';
-        this.returnUrl = process.env.VNP_RETURN_URL || 'http://localhost:5000/api/payment/vnpay/return';
+        this.returnUrl = process.env.VNP_RETURN_URL || 'https://afterglow-cosmetic-backend.onrender.com/api/payment/vnpay/return';
     }
 
     createPaymentUrl(params) {
@@ -30,21 +30,30 @@ class VNPayService {
 
         vnp_Params = this.sortObject(vnp_Params);
 
+        // Build signData with encoded values, replacing %20 with +
         const signData = Object.keys(vnp_Params)
-            .map(key => `${key}=${vnp_Params[key]}`)
+            .map(key => {
+                const val = String(vnp_Params[key]);
+                return `${encodeURIComponent(key)}=${encodeURIComponent(val).replace(/%20/g, "+")}`;
+            })
             .join('&');
 
         const hmac = crypto.createHmac("sha512", this.secretKey);
         const signed = hmac.update(Buffer.from(signData, 'utf-8')).digest("hex");
         
-        vnp_Params['vnp_SecureHash'] = signed;
+        // Build final payment URL
+        const paymentUrl = new URL(this.vnpUrl);
+        Object.keys(vnp_Params).forEach(key => {
+            paymentUrl.searchParams.append(key, vnp_Params[key]);
+        });
+        paymentUrl.searchParams.append('vnp_SecureHash', signed);
         
-        const searchParams = new URLSearchParams();
-        for (const key in vnp_Params) {
-            searchParams.append(key, vnp_Params[key]);
-        }
+        // IMPORTANT: URLSearchParams.toString() might use %20. 
+        // VNPAY often requires + for hashing but might accept %20 in URL.
+        // However, to be safe, we reconstruct the URL manually to match signData.
         
-        return this.vnpUrl + '?' + searchParams.toString();
+        const finalUrl = this.vnpUrl + '?' + signData + '&vnp_SecureHash=' + signed;
+        return finalUrl;
     }
 
     verifyResponse(vnp_Params) {
@@ -54,8 +63,12 @@ class VNPayService {
         delete vnp_Params['vnp_SecureHashType'];
 
         const sortedParams = this.sortObject(vnp_Params);
+        
         const signData = Object.keys(sortedParams)
-            .map(key => `${key}=${sortedParams[key]}`)
+            .map(key => {
+                const val = String(sortedParams[key]);
+                return `${encodeURIComponent(key)}=${encodeURIComponent(val).replace(/%20/g, "+")}`;
+            })
             .join('&');
         
         const hmac = crypto.createHmac("sha512", this.secretKey);
@@ -74,13 +87,15 @@ class VNPayService {
     }
 
     formatDate(date) {
+        // Force GMT+7 (Vietnam Time)
+        const vnTime = new Date(date.getTime() + (7 * 60 * 60 * 1000));
         const pad = (n) => (n < 10 ? '0' + n : n);
-        return date.getFullYear() +
-            pad(date.getMonth() + 1) +
-            pad(date.getDate()) +
-            pad(date.getHours()) +
-            pad(date.getMinutes()) +
-            pad(date.getSeconds());
+        return vnTime.getUTCFullYear() +
+            pad(vnTime.getUTCMonth() + 1) +
+            pad(vnTime.getUTCDate()) +
+            pad(vnTime.getUTCHours()) +
+            pad(vnTime.getUTCMinutes()) +
+            pad(vnTime.getUTCSeconds());
     }
 }
 
