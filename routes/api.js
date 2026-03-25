@@ -8,6 +8,7 @@ const Order    = require('../models/Order');
 const Customer = require('../models/Customer');
 const Review   = require('../models/Review');
 const User     = require('../models/User');
+const vnpayService = require('../services/vnpayService');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'afterglow_luxury_secret_key_2026';
 
@@ -312,7 +313,7 @@ router.post('/orders', async (req, res) => {
         if (paymentMethod === 'momo') {
             try {
                 const momoOrderId = `AFTERGLOW_${newOrder._id}`;
-                const frontendBaseUrl = (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/$/, '');
+                const frontendBaseUrl = (process.env.FRONTEND_URL || 'https://afterglow-cosmetic.vercel.app').replace(/\/$/, '');
                 const backendBaseUrl = (process.env.BACKEND_URL || 'https://afterglow-cosmetic-backend.onrender.com').replace(/\/$/, '');
                 const returnUrl = `${frontendBaseUrl}/order-success?orderId=${newOrder._id}&method=momo`;
                 const notifyUrl = `${backendBaseUrl}/api/payment/momo/notify`;
@@ -347,6 +348,35 @@ router.post('/orders', async (req, res) => {
                     success: true,
                     data: { orderId: newOrder._id },
                     message: 'MoMo payment error. Please try another payment method.',
+                });
+            }
+        }
+
+        // ── VNPAY payment ───────────────────────────────────
+        if (paymentMethod === 'vnpay') {
+            try {
+                const ipAddress = req.headers['x-forwarded-for'] ||
+                    req.connection.remoteAddress ||
+                    req.socket.remoteAddress ||
+                    req.connection.socket.remoteAddress;
+
+                const vnpayUrl = vnpayService.createPaymentUrl({
+                    amount: Math.round(totalAmount),
+                    orderId: newOrder._id.toString(),
+                    orderInfo: `Thanh toan don hang #${newOrder._id}`,
+                    ipAddress: ipAddress || '127.0.0.1'
+                });
+
+                return res.status(201).json({
+                    success: true,
+                    data: { orderId: newOrder._id, vnpayUrl },
+                });
+            } catch (vnpayErr) {
+                console.error('VNPAY error:', vnpayErr.message);
+                return res.status(201).json({
+                    success: true,
+                    data: { orderId: newOrder._id },
+                    message: 'VNPAY payment error. Please try another payment method.',
                 });
             }
         }

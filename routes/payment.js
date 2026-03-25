@@ -2,6 +2,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const router  = express.Router();
 const Order   = require('../models/Order');
+const vnpayService = require('../services/vnpayService');
 
 const MOMO_SECRET_KEY = process.env.MOMO_SECRET_KEY || 'K951B6PE1waDMi640xX08PD3vg6EkVlz';
 
@@ -67,6 +68,89 @@ router.post('/momo/notify', async (req, res) => {
     } catch (err) {
         console.error('[MoMo IPN] Error:', err.message);
         return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// ── GET /api/payment/vnpay/return ──────────────────────────
+// VNPAY Return URL — called by browser after payment completion
+router.get('/vnpay/return', async (req, res) => {
+    try {
+        const vnp_Params = req.query;
+        const isValid = vnpayService.verifyResponse({ ...vnp_Params });
+
+        const orderId = vnp_Params['vnp_TxnRef'];
+        const responseCode = vnp_Params['vnp_ResponseCode'];
+
+        const frontendUrl = (process.env.FRONTEND_URL || 'https://afterglow-cosmetic.vercel.app').replace(/\/$/, '');
+        
+        if (isValid) {
+            if (responseCode === '00') {
+                // Success
+                await Order.findByIdAndUpdate(orderId, {
+                    paymentStatus: 'Paid',
+                    status: 'Processing'
+                });
+                return res.redirect(`${frontendUrl}/order-success?orderId=${orderId}&method=vnpay&status=success`);
+            } else {
+                // Failed
+                await Order.findByIdAndUpdate(orderId, {
+                    paymentStatus: 'Failed'
+                });
+                return res.redirect(`${frontendUrl}/order-success?orderId=${orderId}&method=vnpay&status=failed&code=${responseCode}`);
+            }
+        } else {
+            console.warn('[VNPAY Return] Invalid signature');
+            return res.redirect(`${frontendUrl}/order-success?orderId=${orderId}&method=vnpay&status=error&message=Invalid+Signature`);
+        }
+    } catch (err) {
+        console.error('[VNPAY Return] Error:', err.message);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+// ── GET /api/payment/vnpay/ipn ─────────────────────────────
+// VNPAY IPN (Instant Payment Notification) — called by VNPAY server
+router.get('/vnpay/ipn', async (req, res) => {
+    try {
+        const vnp_Params = req.query;
+        const isValid = vnpayService.verifyResponse({ ...vnp_Params });
+
+        if (isValid) {
+            const orderId = vnp_Params['vnp_TxnRef'];
+            const responseCode = vnp_Params['vnp_ResponseCode'];
+            const amount = vnp_Params['vnp_Amount'] / 100;
+
+            const order = await Order.findById(orderId);
+            if (!order) {
+                return res.status(200).json({ RspCode: '01', Message: 'Order not found' });
+            }
+
+            if (order.totalAmount !== amount) {
+                return res.status(200).json({ RspCode: '04', Message: 'Invalid amount' });
+            }
+
+            if (order.paymentStatus !== 'Pending') {
+                return res.status(200).json({ RspCode: '02', Message: 'Order already confirmed' });
+            }
+
+            const paid = responseCode === '00';
+            await Order.findByIdAndUpdate(orderId, {
+                paymentStatus: paid ? 'Paid' : 'Failed',
+                status: paid ? 'Processing' : 'Pending'
+            });
+
+            if (paid) {
+                const emailService = require('../services/emailService');
+                emailService.sendOrderConfirmation(order.email, order);
+            }
+
+            return res.status(200).json({ RspCode: '00', Message: 'Success' });
+        } else {
+            return res.status(200).json({ RspCode: '97', Message: 'Invalid signature' });
+        }
+    } catch (err) {
+        console.error('[VNPAY IPN] Error:', err.message);
+        return res.status(200).json({ RspCode: '99', Message: 'Unknown error' });
     }
 });
 
