@@ -2,8 +2,8 @@ const crypto = require('crypto');
 
 class VNPayService {
     constructor() {
-        this.tmnCode = process.env.VNP_TMN_CODE || 'QLXYGQR9';
-        this.secretKey = process.env.VNP_HASH_SECRET || 'B3XNGSJCRN4B5MAETH7FXKNPGRG4WR7F';
+        this.tmnCode = process.env.VNP_TMN_CODE || 'XO4STLLN';
+        this.secretKey = process.env.VNP_HASH_SECRET || 'IB35Y4KGVDKFGNGVEI1U6XTSA7SV6KR4';
         this.vnpUrl = process.env.VNP_URL || 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html';
         this.returnUrl = process.env.VNP_RETURN_URL || 'http://localhost:5000/api/payment/vnpay/return';
     }
