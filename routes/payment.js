@@ -86,10 +86,22 @@ router.get('/vnpay/return', async (req, res) => {
         if (isValid) {
             if (responseCode === '00') {
                 // Success
-                await Order.findByIdAndUpdate(orderId, {
-                    paymentStatus: 'Paid',
-                    status: 'Processing'
-                });
+                const order = await Order.findById(orderId);
+                if (order && order.paymentStatus === 'Pending') {
+                    const updatedOrder = await Order.findByIdAndUpdate(orderId, {
+                        paymentStatus: 'Paid',
+                        status: 'Processing'
+                    }, { new: true });
+                    
+                    // Send email if first time success
+                    try {
+                        const emailService = require('../services/emailService');
+                        const targetEmail = updatedOrder.email || updatedOrder.customerEmail || 'guest@afterglow.com';
+                        emailService.sendOrderConfirmation(targetEmail, updatedOrder);
+                    } catch (emailErr) {
+                        console.error('[VNPAY Return] Email error:', emailErr.message);
+                    }
+                }
                 return res.redirect(`${frontendUrl}/order-success?orderId=${orderId}&method=vnpay&status=success`);
             } else {
                 // Failed
@@ -136,14 +148,19 @@ router.get('/vnpay/ipn', async (req, res) => {
             }
 
             const paid = responseCode === '00';
-            await Order.findByIdAndUpdate(orderId, {
+            const updatedOrder = await Order.findByIdAndUpdate(orderId, {
                 paymentStatus: paid ? 'Paid' : 'Failed',
                 status: paid ? 'Processing' : 'Pending'
-            });
+            }, { new: true });
 
             if (paid) {
-                const emailService = require('../services/emailService');
-                emailService.sendOrderConfirmation(order.email, order);
+                try {
+                    const emailService = require('../services/emailService');
+                    const targetEmail = updatedOrder.email || updatedOrder.customerEmail || 'guest@afterglow.com';
+                    emailService.sendOrderConfirmation(targetEmail, updatedOrder);
+                } catch (emailErr) {
+                    console.error('[VNPAY IPN] Email error:', emailErr.message);
+                }
             }
 
             return res.status(200).json({ RspCode: '00', Message: 'Success' });
